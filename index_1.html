@@ -1,0 +1,832 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AV Support Helpdesk</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { overflow: hidden; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<script>
+
+// localStorage-based storage for standalone deployment
+if (!window.storage) {
+  window.storage = {
+    async get(k) { const v = localStorage.getItem(k); return v ? { key: k, value: v } : null; },
+    async set(k, v) { localStorage.setItem(k, v); return { key: k, value: v }; },
+    async delete(k) { localStorage.removeItem(k); return { key: k, deleted: true }; },
+    async list(prefix) { const keys = []; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (!prefix || k.startsWith(prefix)) keys.push(k); } return { keys }; }
+  };
+}
+
+</script>
+<script type="text/babel">
+const { useState, useEffect, useCallback, useMemo, useRef } = React;
+
+
+// ─── STORAGE ────────────────────────────────────────────────────────────────
+const SK = { clients: "avhd2:clients", tickets: "avhd2:tickets", notes: "avhd2:notes", equipment: "avhd2:equipment", staff: "avhd2:staff", attachments: "avhd2:attachments" };
+const load = async (k, fb) => { try { const r = await window.storage.get(k); return r ? JSON.parse(r.value) : fb; } catch { return fb; } };
+const save = async (k, d) => { try { await window.storage.set(k, JSON.stringify(d)); } catch (e) { console.error(e); } };
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+const fmtDate = d => new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+const fmtDT = d => new Date(d).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+const ago = d => { const s = Math.floor((Date.now() - new Date(d)) / 1000); if (s < 60) return "just now"; if (s < 3600) return `${Math.floor(s / 60)}m ago`; if (s < 86400) return `${Math.floor(s / 3600)}h ago`; return `${Math.floor(s / 86400)}d ago`; };
+
+// ─── SEED DATA ──────────────────────────────────────────────────────────────
+const INIT_STAFF = [
+  { id: "s1", name: "James Hartley", role: "owner", email: "james@avcompany.co.uk", initials: "JH", color: "#1e40af" },
+  { id: "s2", name: "Mark Reynolds", role: "technician", email: "mark@avcompany.co.uk", initials: "MR", color: "#9333ea" },
+  { id: "s3", name: "Sophie Chen", role: "office", email: "sophie@avcompany.co.uk", initials: "SC", color: "#0891b2" },
+  { id: "s4", name: "Dan Okafor", role: "technician", email: "dan@avcompany.co.uk", initials: "DO", color: "#c2410c" },
+];
+const INIT_CLIENTS = [
+  { id: "c1", name: "Henderson Family", address: "14 Willow Lane, Cobham, KT11 2QR", phone: "07700 900123", email: "tom@henderson.co.uk", pin: "1234", installDate: "2021-06-15", notes: "Large detached. Dedicated cinema room in basement. Very particular about picture quality.", contractType: "maintenance" },
+  { id: "c2", name: "Patel Residence", address: "8 The Crescent, Esher, KT10 8JP", phone: "07700 900456", email: "raj.patel@gmail.com", pin: "5678", installDate: "2023-03-20", notes: "Open-plan living space. Multi-room Sonos + dedicated cinema. Two young children.", contractType: "warranty" },
+  { id: "c3", name: "Morrison-Clarke", address: "Oakfield House, Virginia Water, GU25 4BN", phone: "07700 900789", email: "sarah@morrisonclarke.com", pin: "9012", installDate: "2019-11-08", notes: "Whole house AV including outdoor terrace. Crestron control. Pool house speakers.", contractType: "maintenance" },
+  { id: "c4", name: "Dr. & Mrs. Waverley", address: "3 Beechwood Park, Weybridge, KT13 0LF", phone: "07700 900321", email: "gwaverley@nhs.net", pin: "3456", installDate: "2024-01-10", notes: "Home office + cinema. Acoustic treatment. Prefers weekend appointments only.", contractType: "warranty" },
+];
+const INIT_EQUIPMENT = [
+  { id: "e1", clientId: "c1", type: "Projector", brand: "JVC", model: "DLA-NZ9", serial: "JVC-NZ9-44821", room: "Cinema Room", status: "operational", warrantyExpiry: "2026-06-15" },
+  { id: "e2", clientId: "c1", type: "Screen", brand: "Screen Innovations", model: "Solo Pro 2 130\"", serial: "SI-SP2-11203", room: "Cinema Room", status: "operational", warrantyExpiry: "2031-06-15" },
+  { id: "e3", clientId: "c1", type: "AV Receiver", brand: "Arcam", model: "AV41", serial: "ARC-AV41-7744", room: "Cinema Room", status: "operational", warrantyExpiry: "2025-06-15" },
+  { id: "e4", clientId: "c1", type: "Speakers", brand: "B&W", model: "CT8 LR (x5) + DB1 Sub (x2)", serial: "Various", room: "Cinema Room", status: "operational", warrantyExpiry: "2026-06-15" },
+  { id: "e5", clientId: "c1", type: "Control System", brand: "Control4", model: "EA-5", serial: "C4-EA5-91002", room: "Whole House", status: "operational", warrantyExpiry: "2025-12-01" },
+  { id: "e6", clientId: "c2", type: "Projector", brand: "Sony", model: "VPL-XW5000ES", serial: "SNY-XW5-30091", room: "Cinema Room", status: "fault", warrantyExpiry: "2026-03-20" },
+  { id: "e7", clientId: "c2", type: "Speakers", brand: "Sonos", model: "Era 300 (x8) + Sub Mini (x2)", serial: "Various", room: "Multi-room", status: "operational", warrantyExpiry: "2025-09-20" },
+  { id: "e8", clientId: "c3", type: "Control System", brand: "Crestron", model: "CP4-R", serial: "CST-CP4R-55012", room: "Whole House", status: "operational", warrantyExpiry: "2024-11-08" },
+  { id: "e9", clientId: "c3", type: "Speakers", brand: "KEF", model: "Ci5160RL (x7)", serial: "Various", room: "Cinema Room", status: "operational", warrantyExpiry: "2024-11-08" },
+  { id: "e10", clientId: "c4", type: "Projector", brand: "Epson", model: "EH-LS12000B", serial: "EPS-LS12-20445", room: "Cinema Room", status: "operational", warrantyExpiry: "2027-01-10" },
+];
+const INIT_TICKETS = [
+  { id: "t1", clientId: "c1", subject: "Projector lamp hours warning - approaching end of life", category: "Equipment Fault", severity: "degraded", status: "in_progress", assigneeId: "s2", createdBy: "s3", createdAt: "2026-02-28T09:15:00", updatedAt: "2026-03-02T14:30:00", equipmentId: "e1", room: "Cinema Room", siteVisitRequired: true, source: "staff" },
+  { id: "t2", clientId: "c2", subject: "Sony projector - no signal from HDMI 2 input", category: "Equipment Fault", severity: "system_down", status: "awaiting_parts", assigneeId: "s4", createdBy: "s3", createdAt: "2026-03-01T11:30:00", updatedAt: "2026-03-03T10:00:00", equipmentId: "e6", room: "Cinema Room", siteVisitRequired: true, source: "staff" },
+  { id: "t3", clientId: "c3", subject: "Crestron app not connecting after router change", category: "Connectivity", severity: "system_down", status: "in_progress", assigneeId: "s1", createdBy: "s1", createdAt: "2026-03-03T08:00:00", updatedAt: "2026-03-03T16:45:00", equipmentId: "e8", room: "Whole House", siteVisitRequired: false, source: "client" },
+  { id: "t4", clientId: "c1", subject: "Request for Dolby Atmos height speaker upgrade", category: "Enhancement", severity: "enhancement", status: "logged", assigneeId: null, createdBy: "s3", createdAt: "2026-03-04T10:20:00", updatedAt: "2026-03-04T10:20:00", equipmentId: null, room: "Cinema Room", siteVisitRequired: true, source: "staff" },
+  { id: "t5", clientId: "c4", subject: "Acoustic panels slight discolouration", category: "General Query", severity: "cosmetic", status: "resolved", assigneeId: "s2", createdBy: "s3", createdAt: "2026-02-15T14:00:00", updatedAt: "2026-02-20T11:30:00", equipmentId: null, room: "Cinema Room", siteVisitRequired: false, source: "staff" },
+  { id: "t6", clientId: "c3", subject: "Pool house speaker crackling at high volume", category: "Equipment Fault", severity: "degraded", status: "resolved", assigneeId: "s4", createdBy: "s1", createdAt: "2026-01-10T09:00:00", updatedAt: "2026-01-18T16:00:00", equipmentId: "e9", room: "Outdoor", siteVisitRequired: true, source: "staff" },
+  { id: "t7", clientId: "c2", subject: "Sonos grouping dropping out intermittently", category: "Connectivity", severity: "degraded", status: "resolved", assigneeId: "s2", createdBy: "s3", createdAt: "2026-02-01T10:30:00", updatedAt: "2026-02-05T13:00:00", equipmentId: "e7", room: "Multi-room", siteVisitRequired: false, source: "client" },
+];
+const INIT_NOTES = [
+  { id: "n1", ticketId: "t1", authorId: "s3", authorType: "staff", content: "Client called - lamp warning appeared during film night. System still functional but image dimming noticeably. Booked Mark for site visit Thursday.", type: "update", createdAt: "2026-02-28T09:20:00" },
+  { id: "n2", ticketId: "t1", authorId: "s2", authorType: "staff", content: "Visited site. Confirmed 3,800 hours on lamp. JVC recommends replacement at 4,000h. Ordered replacement lamp - JVC PK-L2618UW. ETA 5-7 days from AWE.", type: "update", createdAt: "2026-03-02T14:30:00" },
+  { id: "n3", ticketId: "t2", authorId: "s4", authorType: "staff", content: "Tested all HDMI inputs on site. HDMI 2 confirmed dead - likely board issue. HDMI 1 and 3 working fine. Swapped client to HDMI 1 as temporary fix.", type: "update", createdAt: "2026-03-01T15:45:00" },
+  { id: "n4", ticketId: "t2", authorId: "s1", authorType: "staff", content: "@Dan - confirmed with Sony UK, this is covered under warranty. Replacement HDMI board being sent. Ref: SNY-WC-2026-4412. ETA 10 working days.", type: "internal", createdAt: "2026-03-03T10:00:00" },
+  { id: "n5", ticketId: "t3", authorId: "c3", authorType: "client", content: "Hi, we changed our router to Sky Glass and now the Crestron app on our iPads won't connect to anything. None of the controls work - lights, AV, nothing. Please help ASAP.", type: "update", createdAt: "2026-03-03T08:00:00" },
+  { id: "n6", ticketId: "t3", authorId: "s1", authorType: "staff", content: "New router using different subnet (192.168.0.x vs old 192.168.1.x). Crestron processor on static IP needs reconfiguring via Toolbox. Will schedule site visit.", type: "update", createdAt: "2026-03-03T16:45:00" },
+  { id: "n7", ticketId: "t5", authorId: "s2", authorType: "staff", content: "Visited and inspected. Minor UV discolouration on two panels nearest window. Recommended repositioning or UV film on window. Client happy - no further action.", type: "resolution", createdAt: "2026-02-20T11:30:00" },
+  { id: "n8", ticketId: "t6", authorId: "s4", authorType: "staff", content: "Replaced crossover in pool house left speaker. Water ingress had corroded one capacitor. Sealed enclosure and tested at full volume - clean output confirmed.", type: "resolution", createdAt: "2026-01-18T16:00:00" },
+  { id: "n9", ticketId: "t7", authorId: "s2", authorType: "staff", content: "Sonos network was on WiFi - moved all units to SonosNet via wired bridge to router. Grouping now stable across all rooms. Advised client not to disable the bridge.", type: "resolution", createdAt: "2026-02-05T13:00:00" },
+];
+
+// ─── CONSTANTS ──────────────────────────────────────────────────────────────
+const STATUSES = { logged: { l: "Logged", c: "#64748b", bg: "#f1f5f9" }, triaged: { l: "Triaged", c: "#7c3aed", bg: "#f5f3ff" }, in_progress: { l: "In Progress", c: "#2563eb", bg: "#eff6ff" }, awaiting_parts: { l: "Awaiting Parts", c: "#d97706", bg: "#fffbeb" }, awaiting_customer: { l: "Awaiting Customer", c: "#ca8a04", bg: "#fefce8" }, resolved: { l: "Resolved", c: "#16a34a", bg: "#f0fdf4" }, closed: { l: "Closed", c: "#9ca3af", bg: "#f9fafb" } };
+const SEVS = { system_down: { l: "System Down", c: "#dc2626", bg: "#fef2f2", i: "●" }, degraded: { l: "Degraded", c: "#d97706", bg: "#fffbeb", i: "◐" }, cosmetic: { l: "Cosmetic", c: "#2563eb", bg: "#eff6ff", i: "○" }, enhancement: { l: "Enhancement", c: "#7c3aed", bg: "#f5f3ff", i: "◇" } };
+const CATS = ["Equipment Fault", "Connectivity", "Calibration", "Software/Firmware", "Control System", "Warranty Claim", "General Query", "Enhancement"];
+const ROOMS = ["Cinema Room", "Living Room", "Master Bedroom", "Outdoor", "Multi-room", "Whole House", "Office", "Pool House"];
+const ROLES = ["owner", "technician", "office", "installer"];
+const COLORS = ["#1e40af", "#9333ea", "#0891b2", "#c2410c", "#059669", "#b91c1c", "#4338ca", "#0369a1", "#a16207", "#be185d"];
+
+// ─── SMALL COMPONENTS ───────────────────────────────────────────────────────
+const Badge = ({ c, bg, children, sm }) => <span style={{ background: bg, color: c, fontSize: sm ? 10 : 11, fontWeight: 600, padding: sm ? "2px 6px" : "3px 10px", borderRadius: 4, letterSpacing: 0.3, whiteSpace: "nowrap", display: "inline-block" }}>{children}</span>;
+const Av = ({ staff, size = 28 }) => <div title={staff?.name} style={{ width: size, height: size, borderRadius: "50%", background: staff?.color || "#94a3b8", color: "#fff", fontSize: size * 0.38, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, letterSpacing: -0.5 }}>{staff?.initials || "?"}</div>;
+const Stat = ({ label, value, accent, sub }) => <div style={{ background: "#fff", border: "1px solid #e2e0d8", borderRadius: 8, padding: "16px 18px" }}><div style={{ fontSize: 10, color: "#6b6b6b", fontWeight: 600, letterSpacing: 0.8, textTransform: "uppercase", marginBottom: 5 }}>{label}</div><div style={{ fontSize: 26, fontWeight: 700, color: accent || "#1a1a1a", lineHeight: 1 }}>{value}</div>{sub && <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 3 }}>{sub}</div>}</div>;
+const Inp = { width: "100%", padding: "8px 10px", border: "1px solid #e2e0d8", borderRadius: 6, fontSize: 13, fontFamily: "inherit", background: "#fff", outline: "none" };
+const Field = ({ l, children }) => <div style={{ marginBottom: 12 }}><label style={{ display: "block", fontSize: 10, fontWeight: 600, color: "#6b6b6b", marginBottom: 3, letterSpacing: 0.5, textTransform: "uppercase" }}>{l}</label>{children}</div>;
+const Btn = ({ onClick, children, primary, disabled, full, sm }) => <button onClick={onClick} disabled={disabled} style={{ padding: sm ? "5px 14px" : "8px 20px", background: disabled ? "#e2e0d8" : primary ? "#2563eb" : "#fff", color: disabled ? "#aaa" : primary ? "#fff" : "#374151", border: primary ? "none" : "1px solid #e2e0d8", borderRadius: 6, fontSize: sm ? 11 : 12, fontWeight: 600, cursor: disabled ? "default" : "pointer", fontFamily: "inherit", width: full ? "100%" : "auto" }}>{children}</button>;
+
+// ─── AI RECOMMENDATION ENGINE ───────────────────────────────────────────────
+function AIRecommendation({ ticket, tickets, notes, equipment, clients }) {
+  const [rec, setRec] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const getRecommendation = async () => {
+    setLoading(true); setError(null);
+    const resolved = tickets.filter(t => (t.status === "resolved" || t.status === "closed") && t.id !== ticket.id);
+    const caseHistory = resolved.map(t => {
+      const tNotes = notes.filter(n => n.ticketId === t.id);
+      const resolution = tNotes.find(n => n.type === "resolution");
+      const eq = equipment.find(e => e.id === t.equipmentId);
+      const cl = clients.find(c => c.id === t.clientId);
+      return `CASE: ${t.subject}\nCategory: ${t.category} | Severity: ${t.severity} | Equipment: ${eq ? `${eq.brand} ${eq.model} (${eq.type})` : "N/A"}\nResolution: ${resolution ? resolution.content : tNotes.map(n => n.content).join(" | ")}\n`;
+    }).join("\n---\n");
+
+    const currentEq = equipment.find(e => e.id === ticket.equipmentId);
+    const currentNotes = notes.filter(n => n.ticketId === ticket.id).map(n => n.content).join("\n");
+
+    try {
+      const resp = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-5-20250514",
+          max_tokens: 1000,
+          system: `You are a senior AV/home cinema support engineer with 20 years experience. You have access to a database of previously resolved support cases. Based on the current issue and similar past cases, provide a practical recommendation. Be specific about steps, parts, and solutions. Keep it concise and actionable - this will be read by a technician. Format with clear sections: LIKELY CAUSE, RECOMMENDED STEPS, PARTS NEEDED (if any), ESTIMATED TIME. If a similar case was resolved before, reference what worked.`,
+          messages: [{ role: "user", content: `CURRENT ISSUE:\nSubject: ${ticket.subject}\nCategory: ${ticket.category}\nSeverity: ${ticket.severity}\nRoom: ${ticket.room}\nEquipment: ${currentEq ? `${currentEq.brand} ${currentEq.model} (${currentEq.type}, S/N: ${currentEq.serial})` : "Not specified"}\nNotes so far:\n${currentNotes || "No notes yet"}\n\n---\nPREVIOUSLY RESOLVED CASES:\n${caseHistory}\n\nBased on the current issue and any relevant past cases, what do you recommend?` }]
+        })
+      });
+      const data = await resp.json();
+      const text = data.content?.map(b => b.type === "text" ? b.text : "").join("") || "No recommendation generated.";
+      setRec(text);
+    } catch (e) { setError("Could not connect to AI service. Check your connection and try again."); }
+    setLoading(false);
+  };
+
+  return (
+    <div style={{ background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 8, padding: 16, marginBottom: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: rec ? 12 : 0 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: "#0369a1", letterSpacing: 0.5, textTransform: "uppercase" }}>AI Recommendation</div>
+        <Btn onClick={getRecommendation} sm disabled={loading}>{loading ? "Analysing..." : rec ? "Refresh" : "Get AI Suggestion"}</Btn>
+      </div>
+      {error && <div style={{ color: "#dc2626", fontSize: 12, marginTop: 8 }}>{error}</div>}
+      {rec && <div style={{ fontSize: 12.5, lineHeight: 1.7, color: "#1e3a5f", whiteSpace: "pre-wrap", marginTop: 4 }}>{rec}</div>}
+    </div>
+  );
+}
+
+// ─── ATTACHMENT COMPONENT ───────────────────────────────────────────────────
+function AttachmentUpload({ ticketId, attachments, onAdd }) {
+  const fileRef = useRef();
+  const handleFile = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const maxSize = 500 * 1024; // 500KB for storage limits
+    if (file.size > maxSize) { alert("File too large. Max 500KB for this demo. In production, files would be stored on a server."); return; }
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const att = { id: uid(), ticketId, name: file.name, type: file.type, size: file.size, data: ev.target.result, createdAt: new Date().toISOString() };
+      onAdd(att);
+    };
+    reader.readAsDataURL(file);
+    e.target.value = "";
+  };
+  const ticketAtts = attachments.filter(a => a.ticketId === ticketId);
+  const isImage = (t) => t?.startsWith("image/");
+  const isVideo = (t) => t?.startsWith("video/");
+
+  return (
+    <div>
+      {ticketAtts.length > 0 && (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+          {ticketAtts.map(a => (
+            <div key={a.id} style={{ border: "1px solid #e2e0d8", borderRadius: 6, overflow: "hidden", width: isImage(a.type) ? 120 : "auto" }}>
+              {isImage(a.type) && <img src={a.data} alt={a.name} style={{ width: 120, height: 80, objectFit: "cover", display: "block" }} />}
+              {isVideo(a.type) && <video src={a.data} style={{ width: 160, height: 100, objectFit: "cover", display: "block" }} controls />}
+              <div style={{ padding: "4px 8px", fontSize: 10, color: "#6b6b6b", background: "#fafaf8" }}>{a.name}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      <input ref={fileRef} type="file" accept="image/*,video/*" onChange={handleFile} style={{ display: "none" }} />
+      <button onClick={() => fileRef.current?.click()} style={{ padding: "5px 12px", fontSize: 11, border: "1px dashed #cbd5e1", borderRadius: 5, background: "#fafaf8", color: "#6b6b6b", cursor: "pointer", fontFamily: "inherit" }}>📎 Attach Photo / Video</button>
+    </div>
+  );
+}
+
+// ─── MAIN APP ───────────────────────────────────────────────────────────────
+function AVHelpdesk() {
+  const [portal, setPortal] = useState("staff"); // "staff" | "client_login" | "client"
+  const [clientUser, setClientUser] = useState(null);
+  const [view, setView] = useState("dashboard");
+  const [clients, setClients] = useState([]);
+  const [tickets, setTickets] = useState([]);
+  const [notes, setNotes] = useState([]);
+  const [equipment, setEquipment] = useState([]);
+  const [staff, setStaff] = useState([]);
+  const [attachments, setAttachments] = useState([]);
+  const [selClient, setSelClient] = useState(null);
+  const [selTicket, setSelTicket] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [showNew, setShowNew] = useState(false);
+  const [showAddStaff, setShowAddStaff] = useState(false);
+  const [filter, setFilter] = useState("all");
+
+  useEffect(() => {
+    (async () => {
+      const [c, t, n, e, s, a] = await Promise.all([load(SK.clients, null), load(SK.tickets, null), load(SK.notes, null), load(SK.equipment, null), load(SK.staff, null), load(SK.attachments, null)]);
+      const isInit = !c;
+      setClients(c || INIT_CLIENTS); setTickets(t || INIT_TICKETS); setNotes(n || INIT_NOTES); setEquipment(e || INIT_EQUIPMENT); setStaff(s || INIT_STAFF); setAttachments(a || []);
+      if (isInit) { save(SK.clients, INIT_CLIENTS); save(SK.tickets, INIT_TICKETS); save(SK.notes, INIT_NOTES); save(SK.equipment, INIT_EQUIPMENT); save(SK.staff, INIT_STAFF); save(SK.attachments, []); }
+      setLoading(false);
+    })();
+  }, []);
+
+  useEffect(() => { if (!loading) save(SK.tickets, tickets); }, [tickets, loading]);
+  useEffect(() => { if (!loading) save(SK.notes, notes); }, [notes, loading]);
+  useEffect(() => { if (!loading) save(SK.clients, clients); }, [clients, loading]);
+  useEffect(() => { if (!loading) save(SK.equipment, equipment); }, [equipment, loading]);
+  useEffect(() => { if (!loading) save(SK.staff, staff); }, [staff, loading]);
+  useEffect(() => { if (!loading) save(SK.attachments, attachments); }, [attachments, loading]);
+
+  const openTix = useMemo(() => tickets.filter(t => !["resolved", "closed"].includes(t.status)), [tickets]);
+
+  const addNote = useCallback((tid, aid, content, type, authorType = "staff") => {
+    const n = { id: uid(), ticketId: tid, authorId: aid, authorType, content, type, createdAt: new Date().toISOString() };
+    setNotes(p => [...p, n]);
+    setTickets(p => p.map(t => t.id === tid ? { ...t, updatedAt: n.createdAt } : t));
+  }, []);
+
+  const addAttachment = useCallback((att) => { setAttachments(p => [...p, att]); }, []);
+
+  const updateStatus = useCallback((tid, s) => { setTickets(p => p.map(t => t.id === tid ? { ...t, status: s, updatedAt: new Date().toISOString() } : t)); }, []);
+  const assign = useCallback((tid, sid) => { setTickets(p => p.map(t => t.id === tid ? { ...t, assigneeId: sid, updatedAt: new Date().toISOString() } : t)); }, []);
+  const createTicket = useCallback((d) => { const t = { id: uid(), ...d, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), status: "logged" }; setTickets(p => [...p, t]); setShowNew(false); setSelTicket(t.id); setView("ticket"); return t; }, []);
+  const addStaffMember = useCallback((s) => { setStaff(p => [...p, s]); setShowAddStaff(false); }, []);
+
+  if (loading) return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", fontFamily: "'DM Sans', sans-serif", color: "#6b6b6b" }}>Loading...</div>;
+
+  // ─── CLIENT PORTAL ──────────────────────────────────────────────────────
+  if (portal === "client_login") return <ClientLogin clients={clients} onLogin={(c) => { setClientUser(c); setPortal("client"); }} onBack={() => setPortal("staff")} />;
+  if (portal === "client") return <ClientPortal client={clientUser} tickets={tickets.filter(t => t.clientId === clientUser.id)} notes={notes} equipment={equipment.filter(e => e.clientId === clientUser.id)} attachments={attachments} onCreateTicket={(d) => { const t = createTicket({ ...d, clientId: clientUser.id, source: "client", createdBy: clientUser.id }); return t; }} onAddNote={(tid, content) => addNote(tid, clientUser.id, content, "update", "client")} onAddAttachment={addAttachment} allTickets={tickets} allClients={clients} onLogout={() => { setClientUser(null); setPortal("staff"); }} />;
+
+  // ─── STAFF PORTAL ───────────────────────────────────────────────────────
+  const Nav = ({ id, l, cnt }) => <button onClick={() => { setView(id); setSelTicket(null); setSelClient(null); }} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 14px", background: view === id ? "#1e293b" : "transparent", color: view === id ? "#fff" : "#94a3b8", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13, fontWeight: view === id ? 600 : 400, width: "100%", textAlign: "left", fontFamily: "inherit" }}>{l}{cnt != null && <span style={{ marginLeft: "auto", fontSize: 10, background: "rgba(255,255,255,0.1)", padding: "1px 7px", borderRadius: 10, fontWeight: 600 }}>{cnt}</span>}</button>;
+
+  return (
+    <div style={{ display: "flex", height: "100vh", fontFamily: "'DM Sans', -apple-system, sans-serif", fontSize: 13, color: "#1a1a1a", background: "#f4f3ee" }}>
+      {/* Sidebar */}
+      <div style={{ width: 220, background: "#0f172a", color: "#fff", display: "flex", flexDirection: "column", flexShrink: 0 }}>
+        <div style={{ padding: "18px 18px 14px", borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+          <div style={{ fontSize: 15, fontWeight: 700, letterSpacing: -0.5 }}>AV Support</div>
+          <div style={{ fontSize: 10, color: "#64748b", letterSpacing: 1.5, textTransform: "uppercase", marginTop: 2 }}>Helpdesk</div>
+        </div>
+        <div style={{ padding: "10px 10px", display: "flex", flexDirection: "column", gap: 2, flex: 1 }}>
+          <Nav id="dashboard" l="Dashboard" />
+          <Nav id="tickets" l="All Tickets" cnt={openTix.length} />
+          <Nav id="clients" l="Clients" cnt={clients.length} />
+          <div style={{ height: 1, background: "rgba(255,255,255,0.06)", margin: "8px 0" }} />
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "2px 14px" }}>
+            <span style={{ fontSize: 10, color: "#475569", letterSpacing: 1.2, textTransform: "uppercase", fontWeight: 600 }}>Team</span>
+            <button onClick={() => setShowAddStaff(true)} style={{ background: "none", border: "none", color: "#475569", cursor: "pointer", fontSize: 16, padding: 0, lineHeight: 1 }} title="Add team member">+</button>
+          </div>
+          {staff.map(s => (
+            <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 14px", fontSize: 12, color: "#94a3b8" }}>
+              <Av staff={s} size={20} />
+              <span style={{ flex: 1 }}>{s.name.split(" ")[0]}</span>
+              <span style={{ fontSize: 10, color: "#475569" }}>{openTix.filter(t => t.assigneeId === s.id).length}</span>
+            </div>
+          ))}
+        </div>
+        <div style={{ padding: "8px 10px", borderTop: "1px solid rgba(255,255,255,0.06)", display: "flex", flexDirection: "column", gap: 6 }}>
+          <Btn onClick={() => setShowNew(true)} primary full>+ New Ticket</Btn>
+          <button onClick={() => setPortal("client_login")} style={{ width: "100%", padding: "8px 0", background: "rgba(255,255,255,0.05)", color: "#94a3b8", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 6, fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}>Switch to Client Portal →</button>
+        </div>
+      </div>
+
+      {/* Main */}
+      <div style={{ flex: 1, overflow: "auto", position: "relative" }}>
+        {showNew && <NewTicketModal clients={clients} staff={staff} equipment={equipment} onClose={() => setShowNew(false)} onCreate={(d) => createTicket({ ...d, source: "staff" })} />}
+        {showAddStaff && <AddStaffModal staff={staff} onClose={() => setShowAddStaff(false)} onAdd={addStaffMember} />}
+
+        {view === "dashboard" && <Dashboard tickets={tickets} clients={clients} staff={staff} notes={notes} open={openTix} onTix={(id) => { setSelTicket(id); setView("ticket"); }} onCli={(id) => { setSelClient(id); setView("client"); }} />}
+
+        {view === "tickets" && !selTicket && (
+          <div style={{ padding: 24 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+              <h1 style={{ fontSize: 20, fontWeight: 700 }}>All Tickets</h1>
+              <div style={{ display: "flex", gap: 4 }}>
+                {[["all", "All"], ["open", "Open"], ["resolved", "Resolved"]].map(([k, l]) => <button key={k} onClick={() => setFilter(k)} style={{ padding: "4px 12px", fontSize: 11, border: "1px solid #e2e0d8", borderRadius: 5, background: filter === k ? "#1e293b" : "#fff", color: filter === k ? "#fff" : "#6b6b6b", cursor: "pointer", fontFamily: "inherit", fontWeight: 500 }}>{l}</button>)}
+              </div>
+            </div>
+            <TixList tickets={filter === "all" ? tickets : filter === "open" ? openTix : tickets.filter(t => ["resolved", "closed"].includes(t.status))} clients={clients} staff={staff} onSel={(id) => { setSelTicket(id); setView("ticket"); }} />
+          </div>
+        )}
+
+        {view === "ticket" && selTicket && (() => {
+          const tk = tickets.find(t => t.id === selTicket);
+          return tk ? <TicketDetail ticket={tk} client={clients.find(c => c.id === tk.clientId)} staff={staff} notes={notes.filter(n => n.ticketId === tk.id)} equipment={equipment.find(e => e.id === tk.equipmentId)} attachments={attachments} allTickets={tickets} allNotes={notes} allEquipment={equipment} allClients={clients} onAddNote={addNote} onUpdateStatus={updateStatus} onAssign={assign} onBack={() => { setSelTicket(null); setView("tickets"); }} onClient={(cid) => { setSelClient(cid); setView("client"); }} onAddAttachment={addAttachment} /> : null;
+        })()}
+
+        {view === "clients" && !selClient && (
+          <div style={{ padding: 24 }}>
+            <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 18 }}>Clients</h1>
+            <CliList clients={clients} tickets={tickets} equipment={equipment} onSel={(id) => { setSelClient(id); setView("client"); }} />
+          </div>
+        )}
+
+        {view === "client" && selClient && (() => {
+          const cl = clients.find(c => c.id === selClient);
+          return cl ? <ClientDash client={cl} tickets={tickets.filter(t => t.clientId === cl.id)} equipment={equipment.filter(e => e.clientId === cl.id)} staff={staff} notes={notes} onTix={(id) => { setSelTicket(id); setView("ticket"); }} onBack={() => { setSelClient(null); setView("clients"); }} onNew={() => setShowNew(true)} /> : null;
+        })()}
+      </div>
+    </div>
+  );
+}
+
+// ─── DASHBOARD ──────────────────────────────────────────────────────────────
+function Dashboard({ tickets, clients, staff, notes, open, onTix, onCli }) {
+  const critical = open.filter(t => t.severity === "system_down");
+  const avgH = useMemo(() => { const r = tickets.filter(t => t.status === "resolved" || t.status === "closed"); if (!r.length) return 0; return Math.round(r.reduce((s, t) => s + (new Date(t.updatedAt) - new Date(t.createdAt)) / 3600000, 0) / r.length); }, [tickets]);
+
+  return (
+    <div style={{ padding: 24 }}>
+      <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>Dashboard</h1>
+      <p style={{ color: "#6b6b6b", fontSize: 12, marginBottom: 18 }}>Support operations overview</p>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12, marginBottom: 22 }}>
+        <Stat label="Open" value={open.length} accent={open.length > 5 ? "#dc2626" : "#1a1a1a"} />
+        <Stat label="System Down" value={critical.length} accent={critical.length > 0 ? "#dc2626" : "#16a34a"} sub={critical.length > 0 ? "Needs attention" : "All clear"} />
+        <Stat label="Awaiting Parts" value={open.filter(t => t.status === "awaiting_parts").length} accent="#d97706" />
+        <Stat label="Avg Resolution" value={`${avgH}h`} />
+        <Stat label="Clients" value={clients.length} />
+      </div>
+
+      {critical.length > 0 && (
+        <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: 16, marginBottom: 20 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "#dc2626", marginBottom: 8, letterSpacing: 0.5, textTransform: "uppercase" }}>Critical</div>
+          {critical.map(t => {
+            const cl = clients.find(c => c.id === t.clientId);
+            const a = staff.find(s => s.id === t.assigneeId);
+            return <div key={t.id} onClick={() => onTix(t.id)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0", cursor: "pointer", borderBottom: "1px solid #fecaca" }}><Badge c="#dc2626" bg="#fee2e2">SYSTEM DOWN</Badge><span style={{ fontWeight: 600, fontSize: 12 }}>{cl?.name}</span><span style={{ color: "#6b6b6b", fontSize: 12, flex: 1 }}>— {t.subject}</span>{a && <Av staff={a} size={22} />}</div>;
+          })}
+        </div>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+        <div>
+          <h3 style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>Recent Activity</h3>
+          <div style={{ background: "#fff", border: "1px solid #e2e0d8", borderRadius: 8, overflow: "hidden" }}>
+            {[...notes].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).slice(0, 8).map(n => {
+              const isClient = n.authorType === "client";
+              const author = isClient ? clients.find(c => c.id === n.authorId) : staff.find(s => s.id === n.authorId);
+              const tk = tickets.find(t => t.id === n.ticketId);
+              const cl = clients.find(c => c.id === tk?.clientId);
+              return (
+                <div key={n.id} onClick={() => onTix(n.ticketId)} style={{ padding: "8px 12px", borderBottom: "1px solid #f1f1ec", cursor: "pointer", display: "flex", gap: 8, alignItems: "flex-start" }}>
+                  {isClient ? <div style={{ width: 22, height: 22, borderRadius: "50%", background: "#e0f2fe", color: "#0284c7", fontSize: 9, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>CL</div> : <Av staff={author} size={22} />}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 11, display: "flex", gap: 4, alignItems: "baseline" }}>
+                      <span style={{ fontWeight: 600 }}>{isClient ? cl?.name : author?.name?.split(" ")[0]}</span>
+                      {isClient && <Badge c="#0284c7" bg="#e0f2fe" sm>Client</Badge>}
+                      <span style={{ color: "#94a3b8", marginLeft: "auto", fontSize: 10, flexShrink: 0 }}>{ago(n.createdAt)}</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: "#6b6b6b", marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{n.content}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        <div>
+          <h3 style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>Clients</h3>
+          <div style={{ background: "#fff", border: "1px solid #e2e0d8", borderRadius: 8, overflow: "hidden" }}>
+            {clients.map(c => {
+              const ct = tickets.filter(t => t.clientId === c.id);
+              const op = ct.filter(t => !["resolved", "closed"].includes(t.status));
+              return <div key={c.id} onClick={() => onCli(c.id)} style={{ padding: "10px 12px", borderBottom: "1px solid #f1f1ec", cursor: "pointer", display: "flex", alignItems: "center", gap: 10 }}><div style={{ width: 32, height: 32, borderRadius: 7, background: "#f1f5f9", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700, color: "#475569" }}>{c.name.charAt(0)}</div><div style={{ flex: 1 }}><div style={{ fontWeight: 600, fontSize: 12 }}>{c.name}</div><div style={{ fontSize: 10, color: "#94a3b8" }}>{c.address.split(",").slice(0, 2).join(",")}</div></div><div style={{ textAlign: "right" }}>{op.length > 0 && <Badge c="#dc2626" bg="#fef2f2" sm>{op.length} open</Badge>}</div></div>;
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── TICKET LIST ────────────────────────────────────────────────────────────
+function TixList({ tickets, clients, staff, onSel }) {
+  const sorted = [...tickets].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+  return (
+    <div style={{ background: "#fff", border: "1px solid #e2e0d8", borderRadius: 8, overflow: "hidden" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "2.5fr 1fr 90px 100px 70px 70px", padding: "8px 14px", fontSize: 10, fontWeight: 600, letterSpacing: 0.8, textTransform: "uppercase", color: "#94a3b8", borderBottom: "1px solid #e2e0d8", background: "#fafaf8" }}>
+        <div>Subject</div><div>Client</div><div>Severity</div><div>Status</div><div>Owner</div><div>Updated</div>
+      </div>
+      {sorted.map(t => {
+        const cl = clients.find(c => c.id === t.clientId);
+        const a = staff.find(s => s.id === t.assigneeId);
+        const sv = SEVS[t.severity]; const st = STATUSES[t.status];
+        return <div key={t.id} onClick={() => onSel(t.id)} style={{ display: "grid", gridTemplateColumns: "2.5fr 1fr 90px 100px 70px 70px", padding: "10px 14px", borderBottom: "1px solid #f4f3ee", cursor: "pointer", alignItems: "center" }} onMouseEnter={e => e.currentTarget.style.background = "#fafaf8"} onMouseLeave={e => e.currentTarget.style.background = ""}><div><div style={{ fontWeight: 600, fontSize: 12.5, marginBottom: 1 }}>{t.subject}</div><div style={{ fontSize: 10, color: "#94a3b8" }}>{t.category} · {t.room}{t.source === "client" ? " · via Client Portal" : ""}</div></div><div style={{ fontWeight: 500, fontSize: 12 }}>{cl?.name}</div><div><Badge c={sv?.c} bg={sv?.bg} sm>{sv?.l}</Badge></div><div><Badge c={st?.c} bg={st?.bg} sm>{st?.l}</Badge></div><div>{a ? <Av staff={a} size={22} /> : <span style={{ color: "#ccc", fontSize: 10 }}>—</span>}</div><div style={{ fontSize: 10, color: "#94a3b8" }}>{ago(t.updatedAt)}</div></div>;
+      })}
+      {sorted.length === 0 && <div style={{ padding: 32, textAlign: "center", color: "#94a3b8" }}>No tickets</div>}
+    </div>
+  );
+}
+
+// ─── TICKET DETAIL ──────────────────────────────────────────────────────────
+function TicketDetail({ ticket, client, staff, notes, equipment, attachments, allTickets, allNotes, allEquipment, allClients, onAddNote, onUpdateStatus, onAssign, onBack, onClient, onAddAttachment }) {
+  const [txt, setTxt] = useState("");
+  const [nType, setNType] = useState("update");
+  const a = staff.find(s => s.id === ticket.assigneeId);
+  const cr = staff.find(s => s.id === ticket.createdBy);
+  const sv = SEVS[ticket.severity]; const st = STATUSES[ticket.status];
+
+  const submit = () => { if (!txt.trim()) return; onAddNote(ticket.id, "s1", txt.trim(), nType, "staff"); setTxt(""); };
+
+  return (
+    <div style={{ padding: 24 }}>
+      <button onClick={onBack} style={{ background: "none", border: "none", color: "#6b6b6b", cursor: "pointer", fontSize: 12, fontFamily: "inherit", marginBottom: 14, padding: 0 }}>← Back</button>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 280px", gap: 20 }}>
+        <div>
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 6, flexWrap: "wrap" }}>
+              <Badge c={sv?.c} bg={sv?.bg}>{sv?.i} {sv?.l}</Badge>
+              <Badge c={st?.c} bg={st?.bg}>{st?.l}</Badge>
+              {ticket.siteVisitRequired && <Badge c="#c2410c" bg="#fff7ed" sm>Site Visit</Badge>}
+              {ticket.source === "client" && <Badge c="#0284c7" bg="#e0f2fe" sm>Client Submitted</Badge>}
+            </div>
+            <h1 style={{ fontSize: 18, fontWeight: 700, lineHeight: 1.3, marginBottom: 3 }}>{ticket.subject}</h1>
+            <div style={{ fontSize: 11, color: "#94a3b8" }}>Opened {cr ? `by ${cr.name}` : "by client"} · {fmtDT(ticket.createdAt)} · Updated {ago(ticket.updatedAt)}</div>
+          </div>
+
+          <AIRecommendation ticket={ticket} tickets={allTickets} notes={allNotes} equipment={allEquipment} clients={allClients} />
+
+          <h3 style={{ fontSize: 12, fontWeight: 700, marginBottom: 10, letterSpacing: 0.3, textTransform: "uppercase", color: "#6b6b6b" }}>Activity</h3>
+          {notes.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt)).map(n => {
+            const isClient = n.authorType === "client";
+            const auth = isClient ? allClients.find(c => c.id === n.authorId) : staff.find(s => s.id === n.authorId);
+            return (
+              <div key={n.id} style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+                  {isClient ? <div style={{ width: 26, height: 26, borderRadius: "50%", background: "#e0f2fe", color: "#0284c7", fontSize: 9, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>CL</div> : <Av staff={auth} size={26} />}
+                  <div style={{ width: 2, flex: 1, background: "#e2e0d8", marginTop: 3 }} />
+                </div>
+                <div style={{ flex: 1, background: n.type === "internal" ? "#fffbeb" : isClient ? "#f0f9ff" : "#fff", border: `1px solid ${n.type === "internal" ? "#fde68a" : isClient ? "#bae6fd" : "#e2e0d8"}`, borderRadius: 7, padding: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                    <div style={{ fontSize: 11, display: "flex", gap: 4, alignItems: "center" }}>
+                      <span style={{ fontWeight: 600 }}>{isClient ? (auth?.name || "Client") : auth?.name}</span>
+                      {isClient && <Badge c="#0284c7" bg="#e0f2fe" sm>Client</Badge>}
+                      {n.type === "internal" && <Badge c="#92400e" bg="#fef3c7" sm>Internal</Badge>}
+                      {n.type === "resolution" && <Badge c="#16a34a" bg="#f0fdf4" sm>Resolution</Badge>}
+                    </div>
+                    <span style={{ fontSize: 10, color: "#94a3b8" }}>{fmtDT(n.createdAt)}</span>
+                  </div>
+                  <div style={{ fontSize: 12.5, color: "#374151", lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{n.content}</div>
+                </div>
+              </div>
+            );
+          })}
+
+          {/* Attachments */}
+          <div style={{ marginBottom: 16 }}>
+            <AttachmentUpload ticketId={ticket.id} attachments={attachments} onAdd={onAddAttachment} />
+          </div>
+
+          {/* Add note */}
+          <div style={{ background: "#fff", border: "1px solid #e2e0d8", borderRadius: 8, padding: 14 }}>
+            <div style={{ display: "flex", gap: 4, marginBottom: 8 }}>
+              {[["update", "Update"], ["internal", "Internal"], ["resolution", "Resolution"]].map(([k, l]) => <button key={k} onClick={() => setNType(k)} style={{ padding: "3px 10px", fontSize: 11, border: "1px solid #e2e0d8", borderRadius: 4, background: nType === k ? "#1e293b" : "#fff", color: nType === k ? "#fff" : "#6b6b6b", cursor: "pointer", fontFamily: "inherit", fontWeight: 500 }}>{l}</button>)}
+            </div>
+            <textarea value={txt} onChange={e => setTxt(e.target.value)} placeholder="Add a note..." rows={3} style={{ ...Inp, resize: "vertical" }} onKeyDown={e => { if (e.key === "Enter" && e.metaKey) submit(); }} />
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 6 }}>
+              <Btn onClick={submit} primary disabled={!txt.trim()}>Add Note</Btn>
+            </div>
+          </div>
+        </div>
+
+        {/* Sidebar */}
+        <div>
+          <div style={{ background: "#fff", border: "1px solid #e2e0d8", borderRadius: 8, padding: 16, marginBottom: 12 }}>
+            <h4 style={{ fontSize: 10, fontWeight: 600, letterSpacing: 0.8, textTransform: "uppercase", color: "#94a3b8", marginBottom: 10 }}>Details</h4>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 12 }}>
+              <div><div style={{ fontSize: 10, color: "#94a3b8", marginBottom: 1 }}>Client</div><div style={{ fontWeight: 600, cursor: "pointer", color: "#2563eb" }} onClick={() => onClient(ticket.clientId)}>{client?.name}</div></div>
+              <div><div style={{ fontSize: 10, color: "#94a3b8", marginBottom: 1 }}>Category</div><div>{ticket.category}</div></div>
+              <div><div style={{ fontSize: 10, color: "#94a3b8", marginBottom: 1 }}>Room</div><div>{ticket.room}</div></div>
+              <div>
+                <div style={{ fontSize: 10, color: "#94a3b8", marginBottom: 2 }}>Status</div>
+                <select value={ticket.status} onChange={e => onUpdateStatus(ticket.id, e.target.value)} style={Inp}>{Object.entries(STATUSES).map(([k, v]) => <option key={k} value={k}>{v.l}</option>)}</select>
+              </div>
+              <div>
+                <div style={{ fontSize: 10, color: "#94a3b8", marginBottom: 2 }}>Assignee</div>
+                <select value={ticket.assigneeId || ""} onChange={e => onAssign(ticket.id, e.target.value || null)} style={Inp}><option value="">Unassigned</option>{staff.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select>
+              </div>
+            </div>
+          </div>
+          {equipment && (
+            <div style={{ background: "#fff", border: "1px solid #e2e0d8", borderRadius: 8, padding: 16, marginBottom: 12 }}>
+              <h4 style={{ fontSize: 10, fontWeight: 600, letterSpacing: 0.8, textTransform: "uppercase", color: "#94a3b8", marginBottom: 10 }}>Equipment</h4>
+              <div style={{ fontSize: 12 }}><div style={{ fontWeight: 600 }}>{equipment.brand} {equipment.model}</div><div style={{ fontSize: 11, color: "#6b6b6b", marginTop: 2 }}>{equipment.type} · {equipment.room}</div><div style={{ fontSize: 10, color: "#94a3b8", marginTop: 2 }}>S/N: {equipment.serial}</div><div style={{ fontSize: 10, marginTop: 3 }}>Warranty: {new Date(equipment.warrantyExpiry) > new Date() ? <span style={{ color: "#16a34a", fontWeight: 600 }}>Active — {fmtDate(equipment.warrantyExpiry)}</span> : <span style={{ color: "#dc2626", fontWeight: 600 }}>Expired</span>}</div></div>
+            </div>
+          )}
+          <div style={{ background: "#fff", border: "1px solid #e2e0d8", borderRadius: 8, padding: 16 }}>
+            <h4 style={{ fontSize: 10, fontWeight: 600, letterSpacing: 0.8, textTransform: "uppercase", color: "#94a3b8", marginBottom: 10 }}>Client Info</h4>
+            <div style={{ fontSize: 11, color: "#374151", lineHeight: 1.7 }}><div>{client?.address}</div><div style={{ marginTop: 3 }}>{client?.phone}</div><div>{client?.email}</div><div style={{ marginTop: 6, fontSize: 10, color: "#94a3b8" }}>Since {fmtDate(client?.installDate)}</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── CLIENT LIST ────────────────────────────────────────────────────────────
+function CliList({ clients, tickets, equipment, onSel }) {
+  return <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>{clients.map(c => {
+    const ct = tickets.filter(t => t.clientId === c.id);
+    const op = ct.filter(t => !["resolved", "closed"].includes(t.status));
+    const eq = equipment.filter(e => e.clientId === c.id);
+    return <div key={c.id} onClick={() => onSel(c.id)} style={{ background: "#fff", border: "1px solid #e2e0d8", borderRadius: 9, padding: 20, cursor: "pointer", transition: "box-shadow 0.15s" }} onMouseEnter={e => e.currentTarget.style.boxShadow = "0 4px 20px rgba(0,0,0,0.07)"} onMouseLeave={e => e.currentTarget.style.boxShadow = "none"}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}><div><div style={{ fontSize: 16, fontWeight: 700 }}>{c.name}</div><div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>{c.address.split(",").slice(0, 2).join(",")}</div></div>{op.length > 0 && <Badge c="#dc2626" bg="#fef2f2">{op.length} open</Badge>}</div><div style={{ display: "flex", gap: 14, fontSize: 11, color: "#6b6b6b" }}><span>{eq.length} items</span><span>{ct.length} tickets</span><span>Since {fmtDate(c.installDate)}</span></div><div style={{ marginTop: 6 }}><Badge c={c.contractType === "maintenance" ? "#2563eb" : "#16a34a"} bg={c.contractType === "maintenance" ? "#eff6ff" : "#f0fdf4"} sm>{c.contractType === "maintenance" ? "Maintenance" : "Warranty"}</Badge></div></div>;
+  })}</div>;
+}
+
+// ─── CLIENT DASHBOARD ───────────────────────────────────────────────────────
+function ClientDash({ client, tickets, equipment, staff, notes, onTix, onBack, onNew }) {
+  const open = tickets.filter(t => !["resolved", "closed"].includes(t.status));
+  const resolved = tickets.filter(t => ["resolved", "closed"].includes(t.status));
+
+  return (
+    <div style={{ padding: 24 }}>
+      <button onClick={onBack} style={{ background: "none", border: "none", color: "#6b6b6b", cursor: "pointer", fontSize: 12, fontFamily: "inherit", marginBottom: 14, padding: 0 }}>← Back</button>
+      <div style={{ background: "#fff", border: "1px solid #e2e0d8", borderRadius: 9, padding: 22, marginBottom: 18, display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div><div style={{ fontSize: 22, fontWeight: 700, marginBottom: 3 }}>{client.name}</div><div style={{ fontSize: 12, color: "#6b6b6b", marginBottom: 6 }}>{client.address}</div><div style={{ display: "flex", gap: 16, fontSize: 11, color: "#6b6b6b" }}><span>{client.phone}</span><span>{client.email}</span><span>Since {fmtDate(client.installDate)}</span></div>{client.notes && <div style={{ marginTop: 8, fontSize: 11, color: "#94a3b8", fontStyle: "italic", maxWidth: 550 }}>{client.notes}</div>}</div>
+        <div style={{ display: "flex", gap: 8 }}><Badge c={client.contractType === "maintenance" ? "#2563eb" : "#16a34a"} bg={client.contractType === "maintenance" ? "#eff6ff" : "#f0fdf4"}>{client.contractType === "maintenance" ? "Maintenance" : "Warranty"}</Badge><Btn onClick={onNew} primary sm>+ Ticket</Btn></div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "2fr 3fr", gap: 18 }}>
+        <div>
+          <h3 style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>Equipment ({equipment.length})</h3>
+          {equipment.map(e => <div key={e.id} style={{ background: "#fff", border: "1px solid #e2e0d8", borderRadius: 7, padding: 12, marginBottom: 8 }}><div style={{ display: "flex", justifyContent: "space-between" }}><div><div style={{ fontWeight: 600, fontSize: 12.5 }}>{e.brand} {e.model}</div><div style={{ fontSize: 10, color: "#6b6b6b", marginTop: 1 }}>{e.type} · {e.room}</div><div style={{ fontSize: 9, color: "#94a3b8", marginTop: 1 }}>S/N: {e.serial}</div></div><div style={{ textAlign: "right" }}><Badge c={e.status === "operational" ? "#16a34a" : "#dc2626"} bg={e.status === "operational" ? "#f0fdf4" : "#fef2f2"} sm>{e.status === "operational" ? "OK" : "Fault"}</Badge><div style={{ fontSize: 9, color: "#94a3b8", marginTop: 2 }}>{new Date(e.warrantyExpiry) > new Date() ? fmtDate(e.warrantyExpiry) : "Expired"}</div></div></div></div>)}
+        </div>
+        <div>
+          {open.length > 0 && <><h3 style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>Open ({open.length})</h3><div style={{ background: "#fff", border: "1px solid #e2e0d8", borderRadius: 8, overflow: "hidden", marginBottom: 18 }}>{open.map(t => { const a = staff.find(s => s.id === t.assigneeId); return <div key={t.id} onClick={() => onTix(t.id)} style={{ padding: "10px 12px", borderBottom: "1px solid #f4f3ee", cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }}><div style={{ flex: 1 }}><div style={{ fontWeight: 600, fontSize: 12, marginBottom: 2 }}>{t.subject}</div><div style={{ display: "flex", gap: 4 }}><Badge c={SEVS[t.severity]?.c} bg={SEVS[t.severity]?.bg} sm>{SEVS[t.severity]?.l}</Badge><Badge c={STATUSES[t.status]?.c} bg={STATUSES[t.status]?.bg} sm>{STATUSES[t.status]?.l}</Badge><span style={{ fontSize: 10, color: "#94a3b8" }}>{ago(t.updatedAt)}</span></div></div>{a && <Av staff={a} size={22} />}</div>; })}</div></>}
+          {resolved.length > 0 && <><h3 style={{ fontSize: 13, fontWeight: 700, marginBottom: 10, color: "#6b6b6b" }}>Resolved ({resolved.length})</h3><div style={{ background: "#fff", border: "1px solid #e2e0d8", borderRadius: 8, overflow: "hidden" }}>{resolved.map(t => <div key={t.id} onClick={() => onTix(t.id)} style={{ padding: "10px 12px", borderBottom: "1px solid #f4f3ee", cursor: "pointer", opacity: 0.7 }}><div style={{ fontWeight: 500, fontSize: 12, marginBottom: 1 }}>{t.subject}</div><div style={{ fontSize: 10, color: "#94a3b8" }}>Resolved {fmtDate(t.updatedAt)} · {t.category}</div></div>)}</div></>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── NEW TICKET MODAL ───────────────────────────────────────────────────────
+function NewTicketModal({ clients, staff, equipment, onClose, onCreate }) {
+  const [f, setF] = useState({ clientId: "", subject: "", category: CATS[0], severity: "degraded", room: ROOMS[0], assigneeId: "", createdBy: "s1", siteVisitRequired: false, equipmentId: "" });
+  const ceq = equipment.filter(e => e.clientId === f.clientId);
+  const go = () => { if (!f.clientId || !f.subject.trim()) return; onCreate({ ...f, assigneeId: f.assigneeId || null, equipmentId: f.equipmentId || null }); };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 999 }} onClick={onClose}>
+      <div style={{ background: "#fff", borderRadius: 10, padding: 28, width: 500, maxHeight: "90vh", overflow: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.2)" }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}><h2 style={{ fontSize: 18, fontWeight: 700 }}>New Ticket</h2><button onClick={onClose} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", color: "#94a3b8" }}>×</button></div>
+        <Field l="Client *"><select value={f.clientId} onChange={e => setF(p => ({ ...p, clientId: e.target.value, equipmentId: "" }))} style={Inp}><option value="">Select...</option>{clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></Field>
+        <Field l="Subject *"><input value={f.subject} onChange={e => setF(p => ({ ...p, subject: e.target.value }))} placeholder="Brief description..." style={Inp} /></Field>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <Field l="Category"><select value={f.category} onChange={e => setF(p => ({ ...p, category: e.target.value }))} style={Inp}>{CATS.map(c => <option key={c}>{c}</option>)}</select></Field>
+          <Field l="Severity"><select value={f.severity} onChange={e => setF(p => ({ ...p, severity: e.target.value }))} style={Inp}>{Object.entries(SEVS).map(([k, v]) => <option key={k} value={k}>{v.l}</option>)}</select></Field>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <Field l="Room"><select value={f.room} onChange={e => setF(p => ({ ...p, room: e.target.value }))} style={Inp}>{ROOMS.map(r => <option key={r}>{r}</option>)}</select></Field>
+          <Field l="Assign"><select value={f.assigneeId} onChange={e => setF(p => ({ ...p, assigneeId: e.target.value }))} style={Inp}><option value="">Unassigned</option>{staff.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select></Field>
+        </div>
+        {ceq.length > 0 && <Field l="Equipment"><select value={f.equipmentId} onChange={e => setF(p => ({ ...p, equipmentId: e.target.value }))} style={Inp}><option value="">None</option>{ceq.map(e => <option key={e.id} value={e.id}>{e.brand} {e.model} ({e.room})</option>)}</select></Field>}
+        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, cursor: "pointer", marginBottom: 16 }}><input type="checkbox" checked={f.siteVisitRequired} onChange={e => setF(p => ({ ...p, siteVisitRequired: e.target.checked }))} />Site visit required</label>
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}><Btn onClick={onClose}>Cancel</Btn><Btn onClick={go} primary disabled={!f.clientId || !f.subject.trim()}>Create Ticket</Btn></div>
+      </div>
+    </div>
+  );
+}
+
+// ─── ADD STAFF MODAL ────────────────────────────────────────────────────────
+function AddStaffModal({ staff, onClose, onAdd }) {
+  const [f, setF] = useState({ name: "", role: "technician", email: "" });
+  const go = () => {
+    if (!f.name.trim()) return;
+    const parts = f.name.trim().split(" ");
+    const initials = (parts[0]?.[0] || "?").toUpperCase() + (parts[parts.length - 1]?.[0] || "").toUpperCase();
+    const color = COLORS[staff.length % COLORS.length];
+    onAdd({ id: uid(), name: f.name.trim(), role: f.role, email: f.email.trim(), initials, color });
+  };
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 999 }} onClick={onClose}>
+      <div style={{ background: "#fff", borderRadius: 10, padding: 28, width: 400, boxShadow: "0 20px 60px rgba(0,0,0,0.2)" }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}><h2 style={{ fontSize: 18, fontWeight: 700 }}>Add Team Member</h2><button onClick={onClose} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", color: "#94a3b8" }}>×</button></div>
+        <Field l="Full Name *"><input value={f.name} onChange={e => setF(p => ({ ...p, name: e.target.value }))} placeholder="e.g. Alex Turner" style={Inp} /></Field>
+        <Field l="Email"><input value={f.email} onChange={e => setF(p => ({ ...p, email: e.target.value }))} placeholder="alex@company.co.uk" style={Inp} /></Field>
+        <Field l="Role"><select value={f.role} onChange={e => setF(p => ({ ...p, role: e.target.value }))} style={Inp}>{ROLES.map(r => <option key={r} value={r}>{r.charAt(0).toUpperCase() + r.slice(1)}</option>)}</select></Field>
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 8 }}><Btn onClick={onClose}>Cancel</Btn><Btn onClick={go} primary disabled={!f.name.trim()}>Add Member</Btn></div>
+      </div>
+    </div>
+  );
+}
+
+// ─── CLIENT LOGIN ───────────────────────────────────────────────────────────
+function ClientLogin({ clients, onLogin, onBack }) {
+  const [email, setEmail] = useState("");
+  const [pin, setPin] = useState("");
+  const [err, setErr] = useState("");
+
+  const go = () => {
+    const c = clients.find(c => c.email.toLowerCase() === email.toLowerCase().trim() && c.pin === pin.trim());
+    if (c) { onLogin(c); } else { setErr("Email or PIN not recognised. Please try again."); }
+  };
+
+  return (
+    <div style={{ height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'DM Sans', sans-serif", background: "linear-gradient(135deg, #0f172a 0%, #1e293b 100%)" }}>
+      <div style={{ background: "#fff", borderRadius: 12, padding: 40, width: 400, boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+        <div style={{ textAlign: "center", marginBottom: 28 }}>
+          <div style={{ fontSize: 20, fontWeight: 700, color: "#0f172a", marginBottom: 4 }}>Client Support Portal</div>
+          <div style={{ fontSize: 12, color: "#94a3b8" }}>Log in to view and manage your support requests</div>
+        </div>
+        <Field l="Email Address"><input value={email} onChange={e => { setEmail(e.target.value); setErr(""); }} placeholder="your@email.com" style={Inp} /></Field>
+        <Field l="PIN"><input value={pin} onChange={e => { setPin(e.target.value); setErr(""); }} placeholder="4-digit PIN" type="password" maxLength={4} style={Inp} onKeyDown={e => { if (e.key === "Enter") go(); }} /></Field>
+        {err && <div style={{ color: "#dc2626", fontSize: 12, marginBottom: 10 }}>{err}</div>}
+        <Btn onClick={go} primary full disabled={!email || !pin}>Log In</Btn>
+        <div style={{ textAlign: "center", marginTop: 16 }}><button onClick={onBack} style={{ background: "none", border: "none", color: "#94a3b8", fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>← Back to Staff Portal</button></div>
+        <div style={{ textAlign: "center", marginTop: 16, padding: 12, background: "#f8fafc", borderRadius: 8, fontSize: 11, color: "#94a3b8" }}>
+          <strong>Demo logins:</strong><br />
+          tom@henderson.co.uk / 1234<br />
+          raj.patel@gmail.com / 5678
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── CLIENT PORTAL ──────────────────────────────────────────────────────────
+function ClientPortal({ client, tickets, notes, equipment, attachments, onCreateTicket, onAddNote, onAddAttachment, allTickets, allClients, onLogout }) {
+  const [view, setView] = useState("home");
+  const [selTix, setSelTix] = useState(null);
+  const [showNew, setShowNew] = useState(false);
+
+  const open = tickets.filter(t => !["resolved", "closed"].includes(t.status));
+  const resolved = tickets.filter(t => ["resolved", "closed"].includes(t.status));
+
+  return (
+    <div style={{ minHeight: "100vh", fontFamily: "'DM Sans', sans-serif", background: "#f8fafc" }}>
+      {/* Client nav */}
+      <div style={{ background: "#0f172a", color: "#fff", padding: "14px 28px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div><span style={{ fontSize: 15, fontWeight: 700 }}>Support Portal</span><span style={{ fontSize: 12, color: "#64748b", marginLeft: 12 }}>Welcome, {client.name}</span></div>
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <button onClick={() => { setView("home"); setSelTix(null); }} style={{ background: view === "home" ? "#1e293b" : "transparent", color: "#fff", border: "none", padding: "5px 14px", borderRadius: 5, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>My Tickets</button>
+          <button onClick={() => setView("equipment")} style={{ background: view === "equipment" ? "#1e293b" : "transparent", color: "#fff", border: "none", padding: "5px 14px", borderRadius: 5, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>My Equipment</button>
+          <button onClick={onLogout} style={{ background: "none", border: "1px solid rgba(255,255,255,0.15)", color: "#94a3b8", padding: "5px 14px", borderRadius: 5, fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}>Log Out</button>
+        </div>
+      </div>
+
+      {showNew && <ClientNewTicket equipment={equipment} onClose={() => setShowNew(false)} onCreate={(d) => { const t = onCreateTicket(d); setShowNew(false); setSelTix(t.id); setView("ticket"); }} />}
+
+      <div style={{ maxWidth: 900, margin: "0 auto", padding: 28 }}>
+        {view === "home" && !selTix && (
+          <>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+              <h1 style={{ fontSize: 20, fontWeight: 700 }}>Your Support Tickets</h1>
+              <Btn onClick={() => setShowNew(true)} primary>+ Report an Issue</Btn>
+            </div>
+
+            {open.length > 0 && (
+              <div style={{ marginBottom: 24 }}>
+                <h3 style={{ fontSize: 13, fontWeight: 600, color: "#6b6b6b", marginBottom: 8 }}>Active ({open.length})</h3>
+                {open.map(t => (
+                  <div key={t.id} onClick={() => { setSelTix(t.id); setView("ticket"); }} style={{ background: "#fff", border: "1px solid #e2e0d8", borderRadius: 8, padding: 16, marginBottom: 8, cursor: "pointer" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <div style={{ fontWeight: 600, fontSize: 14 }}>{t.subject}</div>
+                      <Badge c={STATUSES[t.status]?.c} bg={STATUSES[t.status]?.bg}>{STATUSES[t.status]?.l}</Badge>
+                    </div>
+                    <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 4 }}>{t.category} · {t.room} · Last updated {ago(t.updatedAt)}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {resolved.length > 0 && (
+              <div>
+                <h3 style={{ fontSize: 13, fontWeight: 600, color: "#6b6b6b", marginBottom: 8 }}>Resolved ({resolved.length})</h3>
+                {resolved.map(t => (
+                  <div key={t.id} onClick={() => { setSelTix(t.id); setView("ticket"); }} style={{ background: "#fff", border: "1px solid #e2e0d8", borderRadius: 8, padding: 16, marginBottom: 8, cursor: "pointer", opacity: 0.7 }}>
+                    <div style={{ fontWeight: 500, fontSize: 13 }}>{t.subject}</div>
+                    <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>Resolved {fmtDate(t.updatedAt)}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {tickets.length === 0 && <div style={{ textAlign: "center", padding: 40, color: "#94a3b8" }}>No support tickets yet. Click "Report an Issue" to get started.</div>}
+          </>
+        )}
+
+        {view === "ticket" && selTix && (() => {
+          const tk = tickets.find(t => t.id === selTix);
+          if (!tk) return null;
+          const tNotes = notes.filter(n => n.ticketId === tk.id && n.type !== "internal"); // hide internal notes from client
+          return <ClientTicketView ticket={tk} notes={tNotes} equipment={equipment.find(e => e.id === tk.equipmentId)} attachments={attachments} onBack={() => { setSelTix(null); setView("home"); }} onAddNote={onAddNote} onAddAttachment={onAddAttachment} allTickets={allTickets} allNotes={notes} allEquipment={equipment} allClients={allClients} />;
+        })()}
+
+        {view === "equipment" && (
+          <>
+            <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 18 }}>Your Installed Equipment</h1>
+            {equipment.map(e => (
+              <div key={e.id} style={{ background: "#fff", border: "1px solid #e2e0d8", borderRadius: 8, padding: 16, marginBottom: 8 }}>
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <div><div style={{ fontWeight: 600, fontSize: 14 }}>{e.brand} {e.model}</div><div style={{ fontSize: 12, color: "#6b6b6b", marginTop: 2 }}>{e.type} · {e.room}</div></div>
+                  <div style={{ textAlign: "right" }}><Badge c={e.status === "operational" ? "#16a34a" : "#dc2626"} bg={e.status === "operational" ? "#f0fdf4" : "#fef2f2"}>{e.status === "operational" ? "Operational" : "Fault Reported"}</Badge><div style={{ fontSize: 11, color: "#94a3b8", marginTop: 4 }}>Warranty: {new Date(e.warrantyExpiry) > new Date() ? `Active until ${fmtDate(e.warrantyExpiry)}` : "Expired"}</div></div>
+                </div>
+              </div>
+            ))}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── CLIENT TICKET VIEW ────────────────────────────────────────────────────
+function ClientTicketView({ ticket, notes, equipment, attachments, onBack, onAddNote, onAddAttachment, allTickets, allNotes, allEquipment, allClients }) {
+  const [txt, setTxt] = useState("");
+  const [aiRec, setAiRec] = useState(null);
+  const [aiLoad, setAiLoad] = useState(false);
+
+  const submit = () => { if (!txt.trim()) return; onAddNote(ticket.id, txt.trim()); setTxt(""); };
+
+  const getAiHelp = async () => {
+    setAiLoad(true);
+    const resolved = allTickets.filter(t => (t.status === "resolved" || t.status === "closed"));
+    const cases = resolved.slice(0, 10).map(t => {
+      const res = allNotes.filter(n => n.ticketId === t.id && n.type === "resolution");
+      const eq = allEquipment.find(e => e.id === t.equipmentId);
+      return `Issue: ${t.subject} (${t.category}, ${eq ? eq.brand + " " + eq.model : "N/A"}) → Fix: ${res.map(r => r.content).join("; ") || "Resolved by technician"}`;
+    }).join("\n");
+
+    try {
+      const resp = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-5-20250514", max_tokens: 800,
+          system: "You are a friendly home AV/cinema support assistant. A customer is experiencing an issue. Based on their description and similar previously resolved cases, suggest simple troubleshooting steps they can try before an engineer visit. Be warm, clear, and non-technical. Use numbered steps. If the issue likely needs professional attention, say so clearly.",
+          messages: [{ role: "user", content: `My issue: ${ticket.subject}\nCategory: ${ticket.category}\nRoom: ${ticket.room}\nEquipment: ${equipment ? `${equipment.brand} ${equipment.model}` : "Not specified"}\n\nPreviously resolved similar cases:\n${cases}\n\nWhat can I try?` }]
+        })
+      });
+      const data = await resp.json();
+      setAiRec(data.content?.map(b => b.text || "").join("") || "Unable to generate suggestions right now.");
+    } catch { setAiRec("Unable to connect. Please try again or contact us directly."); }
+    setAiLoad(false);
+  };
+
+  return (
+    <>
+      <button onClick={onBack} style={{ background: "none", border: "none", color: "#6b6b6b", cursor: "pointer", fontSize: 12, fontFamily: "inherit", marginBottom: 14, padding: 0 }}>← Back to tickets</button>
+      <div style={{ background: "#fff", border: "1px solid #e2e0d8", borderRadius: 10, padding: 24, marginBottom: 16 }}>
+        <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+          <Badge c={SEVS[ticket.severity]?.c} bg={SEVS[ticket.severity]?.bg}>{SEVS[ticket.severity]?.l}</Badge>
+          <Badge c={STATUSES[ticket.status]?.c} bg={STATUSES[ticket.status]?.bg}>{STATUSES[ticket.status]?.l}</Badge>
+        </div>
+        <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>{ticket.subject}</h1>
+        <div style={{ fontSize: 12, color: "#94a3b8" }}>Opened {fmtDT(ticket.createdAt)} · Last updated {ago(ticket.updatedAt)}</div>
+        {equipment && <div style={{ marginTop: 10, fontSize: 12, padding: 10, background: "#f8fafc", borderRadius: 6 }}><strong>{equipment.brand} {equipment.model}</strong> · {equipment.type} · {equipment.room}</div>}
+      </div>
+
+      {/* AI Help */}
+      <div style={{ background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 8, padding: 16, marginBottom: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div><div style={{ fontSize: 13, fontWeight: 700, color: "#0369a1" }}>Need help now?</div><div style={{ fontSize: 11, color: "#6b6b6b" }}>Our AI assistant can suggest troubleshooting steps based on similar issues we've resolved</div></div>
+          <Btn onClick={getAiHelp} primary sm disabled={aiLoad}>{aiLoad ? "Thinking..." : "Get Suggestions"}</Btn>
+        </div>
+        {aiRec && <div style={{ marginTop: 12, fontSize: 13, lineHeight: 1.7, color: "#1e3a5f", whiteSpace: "pre-wrap", borderTop: "1px solid #bae6fd", paddingTop: 12 }}>{aiRec}</div>}
+      </div>
+
+      {/* Messages */}
+      <h3 style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>Messages</h3>
+      {notes.map(n => {
+        const isClient = n.authorType === "client";
+        return (
+          <div key={n.id} style={{ display: "flex", justifyContent: isClient ? "flex-end" : "flex-start", marginBottom: 10 }}>
+            <div style={{ maxWidth: "75%", background: isClient ? "#2563eb" : "#fff", color: isClient ? "#fff" : "#374151", border: isClient ? "none" : "1px solid #e2e0d8", borderRadius: 10, padding: "10px 14px" }}>
+              <div style={{ fontSize: 10, opacity: 0.7, marginBottom: 3 }}>{isClient ? "You" : "Support Team"} · {fmtDT(n.createdAt)}</div>
+              <div style={{ fontSize: 13, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{n.content}</div>
+            </div>
+          </div>
+        );
+      })}
+
+      {/* Attachments */}
+      <div style={{ marginBottom: 12, marginTop: 12 }}>
+        <AttachmentUpload ticketId={ticket.id} attachments={attachments} onAdd={onAddAttachment} />
+      </div>
+
+      {/* Reply */}
+      {!["resolved", "closed"].includes(ticket.status) && (
+        <div style={{ background: "#fff", border: "1px solid #e2e0d8", borderRadius: 8, padding: 14, marginTop: 8 }}>
+          <textarea value={txt} onChange={e => setTxt(e.target.value)} placeholder="Type a message..." rows={3} style={{ width: "100%", border: "1px solid #e2e0d8", borderRadius: 6, padding: 10, fontSize: 13, fontFamily: "inherit", resize: "vertical", outline: "none" }} onKeyDown={e => { if (e.key === "Enter" && e.metaKey) submit(); }} />
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 6 }}><Btn onClick={submit} primary disabled={!txt.trim()}>Send Message</Btn></div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ─── CLIENT NEW TICKET ──────────────────────────────────────────────────────
+function ClientNewTicket({ equipment, onClose, onCreate }) {
+  const [f, setF] = useState({ subject: "", category: CATS[0], severity: "degraded", room: ROOMS[0], equipmentId: "", siteVisitRequired: false, assigneeId: null, createdBy: null });
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 999 }} onClick={onClose}>
+      <div style={{ background: "#fff", borderRadius: 10, padding: 28, width: 480, maxHeight: "90vh", overflow: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.2)" }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}><h2 style={{ fontSize: 18, fontWeight: 700 }}>Report an Issue</h2><button onClick={onClose} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", color: "#94a3b8" }}>×</button></div>
+        <Field l="What's the problem? *"><input value={f.subject} onChange={e => setF(p => ({ ...p, subject: e.target.value }))} placeholder="e.g. No picture from projector, speakers crackling..." style={Inp} /></Field>
+        <Field l="Which room?"><select value={f.room} onChange={e => setF(p => ({ ...p, room: e.target.value }))} style={Inp}>{ROOMS.map(r => <option key={r}>{r}</option>)}</select></Field>
+        <Field l="Type of issue"><select value={f.category} onChange={e => setF(p => ({ ...p, category: e.target.value }))} style={Inp}>{CATS.map(c => <option key={c}>{c}</option>)}</select></Field>
+        <Field l="How urgent is this?"><select value={f.severity} onChange={e => setF(p => ({ ...p, severity: e.target.value }))} style={Inp}><option value="system_down">Nothing works — system is down</option><option value="degraded">Something isn't right but partially working</option><option value="cosmetic">Minor / cosmetic issue</option><option value="enhancement">Not urgent — upgrade or feature request</option></select></Field>
+        {equipment.length > 0 && <Field l="Which equipment? (optional)"><select value={f.equipmentId} onChange={e => setF(p => ({ ...p, equipmentId: e.target.value }))} style={Inp}><option value="">Not sure</option>{equipment.map(e => <option key={e.id} value={e.id}>{e.brand} {e.model} ({e.room})</option>)}</select></Field>}
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}><Btn onClick={onClose}>Cancel</Btn><Btn onClick={() => { if (f.subject.trim()) onCreate({ ...f, equipmentId: f.equipmentId || null }); }} primary disabled={!f.subject.trim()}>Submit</Btn></div>
+      </div>
+    </div>
+  );
+}
+
+
+ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(AVHelpdesk));
+</script>
+</body>
+</html>
